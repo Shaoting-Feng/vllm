@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import itertools
 import time
+import csv
+import os
 from collections import defaultdict
 from collections.abc import Iterable
 from typing import Any
@@ -60,6 +62,10 @@ class Scheduler(SchedulerInterface):
         include_finished_set: bool = False,
         log_stats: bool = False,
     ) -> None:
+
+        self.last_batch_size = -1
+        self.has_free_cycle = True
+
         self.vllm_config = vllm_config
         self.scheduler_config = vllm_config.scheduler_config
         self.cache_config = vllm_config.cache_config
@@ -674,6 +680,28 @@ class Scheduler(SchedulerInterface):
         # Record the request ids that were scheduled in this step.
         self.prev_step_scheduled_req_ids.clear()
         self.prev_step_scheduled_req_ids.update(num_scheduled_tokens.keys())
+
+        # 从环境变量读取 CSV 文件名，默认 log.csv
+        log_path = os.getenv("BATCH_SIZE_CSV_NAME")
+
+        if log_path:
+            # 如果文件不存在就写 header
+            file_exists = os.path.exists(log_path)
+
+            with open(log_path, "a", newline="") as f:
+                writer = csv.writer(f)
+                if not file_exists:
+                    writer.writerow(["timestamp", "total_num_scheduled_tokens"])
+
+                t = time.time()
+                writer.writerow([t, total_num_scheduled_tokens])
+                self.last_batch_size = total_num_scheduled_tokens
+
+            if self.has_free_cycle and (self.last_batch_size == 8172 and total_num_scheduled_tokens == 8172):
+                self.has_free_cycle = False
+
+            if self.has_free_cycle == False and total_num_scheduled_tokens < 8172:
+                raise RuntimeError("Re-detected free cycle!")
 
         scheduler_output = SchedulerOutput(
             scheduled_new_reqs=new_reqs_data,
